@@ -71,10 +71,15 @@ CREATE INDEX ON authorizations(status, expires_at);
 -- Idempotency: first response wins; retries get the stored response.
 CREATE TABLE idempotency_keys (
     idempotency_key TEXT PRIMARY KEY,
+    request_path    TEXT NOT NULL,
     request_hash    TEXT NOT NULL,
-    response_status INT NOT NULL,
-    response_body   JSONB NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    recovery_point  TEXT NOT NULL DEFAULT 'started'
+        CHECK (recovery_point IN ('started', 'hold_placed', 'network_called', 'finished')),
+    locked_at       TIMESTAMPTZ,
+    response_status INT,
+    response_body   JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_run_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Ledger balance: sum of posted lines.
