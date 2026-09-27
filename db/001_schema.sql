@@ -65,6 +65,19 @@ CREATE TABLE authorizations (
     expires_at      TIMESTAMPTZ NOT NULL,      -- unreleased holds expire and free the balance
     captured_amount_minor BIGINT NOT NULL DEFAULT 0
 );
+CREATE TABLE decline_codes (
+    code        TEXT PRIMARY KEY,
+    description TEXT NOT NULL
+);
+
+INSERT INTO decline_codes (code, description) VALUES
+    ('51', 'insufficient funds'),
+    ('05', 'do not honor'),
+    ('14', 'invalid card number'),
+    ('54', 'expired card'),
+    ('43', 'card reported lost or stolen'),
+    ('61', 'exceeds withdrawal/velocity limit'),
+    ('62', 'restricted card (frozen)');
 CREATE INDEX ON authorizations(card_token, approved_at);
 CREATE INDEX ON authorizations(status, expires_at);
 
