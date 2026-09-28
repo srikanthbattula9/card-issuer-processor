@@ -10,16 +10,18 @@ Modeled on the responsibilities of a card platform team: **authorization, transa
 
 | Module | State |
 |---|---|
-| Double-entry ledger (accounts, journal entries, balance invariant) | in progress |
-| Card lifecycle (issue, activate, freeze, close, one-time virtual cards) | planned |
-| Tokenization (PAN vault separated from operational tables) | planned |
-| Authorization engine (balance, status, MCC rules, velocity, decline codes) | planned |
-| Transaction processing (auth → capture → settle, void, refund, partial capture, auth expiry) | planned |
-| Idempotency keys + safe retries under concurrency | planned |
-| Simulated card network (auth requests, capture, daily settlement files, chaos) | planned |
-| Kafka event stream (every state change published) | planned |
-| Settlement reconciliation consumer | planned |
-| Grafana: approval rate, decline mix, p95 auth latency, ledger drift | planned |
+| Double-entry ledger (DB-enforced zero-sum invariant) | done, tested |
+| Tokenized card vault (PAN kept out of operational tables) | schema only; encryption is a placeholder |
+| Card lifecycle endpoints (issue, activate, freeze, close, one-time virtual cards) | planned |
+| Authorization engine (card status, expiry, balance; decline codes 51/54/62/14; row-locked holds) | done, tested incl. concurrent-hold race |
+| Authorization rules: MCC blocklist, velocity limits | in progress |
+| Idempotency keys with recovery-point tracking | done, tested; completer to resume interrupted requests planned |
+| Capture (partial/full), void, refund (offsetting entries) | done, tested |
+| HTTP API (authorize, capture, void, refund, balance) | done |
+| Kafka events (published after commit) | done, best-effort; transactional outbox planned |
+| Network simulator (approve/decline/duplicate traffic, latency report) | done |
+| Settlement reconciliation | planned; see `settlement-recon` |
+| Grafana dashboards | planned |
 
 This table is the roadmap. Each row becomes a PR with tests.
 
@@ -70,11 +72,18 @@ Python 3.12 · FastAPI · PostgreSQL · Kafka · Docker Compose · pytest · Git
 
 ## Running
 
+## Running
+
 ```bash
-docker compose up -d        # postgres, kafka, grafana
-make migrate                # apply schema
-make test                   # ledger invariant, idempotency, lifecycle
+docker compose up -d        # Postgres (localhost:5433) + Redpanda (localhost:9092); schema applies on first start
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+make test
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/cards uvicorn app.main:app --port 8000
+python3 scripts/seed_cards.py && python3 scripts/simulate_network.py
 ```
+
+After a schema change, `docker compose down && docker compose up -d` re-applies it (data is not persisted).
 
 ## Why this exists
 

@@ -16,4 +16,4 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
       - run: psql postgresql://postgres:postgres@localhost:5432/cards -f db/001_schema.sql
-      - run: DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cards pytest -q
+      - run: EVENTS_DISABLED=1 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cards pytest -q

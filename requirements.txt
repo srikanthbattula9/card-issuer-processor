@@ -4,3 +4,4 @@ psycopg[binary]
 pydantic
 pytest
 confluent-kafka
+requests
