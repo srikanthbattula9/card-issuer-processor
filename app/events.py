@@ -29,6 +29,8 @@ def publish_event(event_type: str, payload: dict) -> None:
     we publish best-effort after the local transaction commits; a stronger
     guarantee (transactional outbox) is a documented next step, not silently
     assumed to be solved."""
+    if os.environ.get("EVENTS_DISABLED") == "1":
+        return
     event = {
         "event_type": event_type,
         "occurred_at": datetime.now(timezone.utc).isoformat(),
