@@ -72,18 +72,16 @@ def capture(
 
     # Post the ledger entry: debit customer, credit a merchant clearing account
     # keyed by merchant_id (created on first use).
-    merchant_account_id = conn.execute(
-        "SELECT account_id FROM accounts WHERE account_type = 'merchant' AND account_id = "
-        "(SELECT account_id FROM accounts WHERE account_type = 'merchant' LIMIT 1)"
-    ).fetchone()
-    # Simplification for this step: one shared merchant clearing account.
+       # Simplification for this step: one shared merchant clearing account.
     # Real per-merchant accounts arrive when the fee split module lands.
-    if merchant_account_id is None:
-        merchant_account_id = conn.execute(
+    row = conn.execute(
+        "SELECT account_id FROM accounts WHERE account_type = 'merchant' ORDER BY account_id LIMIT 1"
+    ).fetchone()
+    if row is None:
+        row = conn.execute(
             "INSERT INTO accounts(account_type) VALUES ('merchant') RETURNING account_id"
         ).fetchone()
-    else:
-        merchant_account_id = merchant_account_id[0]
+    merchant_account_id = row[0]
 
     entry_id = conn.execute(
         "INSERT INTO journal_entries(entry_type, transaction_id, idempotency_key) "
