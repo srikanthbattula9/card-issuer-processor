@@ -14,7 +14,7 @@ Modeled on the responsibilities of a card platform team: **authorization, transa
 | Tokenized card vault (PAN kept out of operational tables) | schema only; encryption is a placeholder |
 | Card lifecycle endpoints (issue, activate, freeze, close, one-time virtual cards) | planned |
 | Authorization engine (card status, expiry, balance; decline codes 51/54/62/14; row-locked holds) | done, tested incl. concurrent-hold race |
-| Authorization rules: MCC blocklist, velocity limits | in progress |
+| Authorization rules: MCC blocklist (57), per-card velocity limit (61), evaluated under the account row lock | done, tested incl. concurrent-velocity test |
 | Idempotency keys with recovery-point tracking | done, tested; completer to resume interrupted requests planned |
 | Capture (partial/full), void, refund (offsetting entries) | done, tested |
 | HTTP API (authorize, capture, void, refund, balance) | done |

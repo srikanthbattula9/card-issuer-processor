@@ -77,7 +77,18 @@ INSERT INTO decline_codes (code, description) VALUES
     ('54', 'expired card'),
     ('43', 'card reported lost or stolen'),
     ('61', 'exceeds withdrawal/velocity limit'),
-    ('62', 'restricted card (frozen)');
+    ('62', 'restricted card (frozen)'),
+    ('57', 'transaction not permitted (blocked merchant category)');
+
+CREATE TABLE blocked_mccs (
+    mcc         CHAR(4) PRIMARY KEY,
+    description TEXT NOT NULL
+);
+
+INSERT INTO blocked_mccs (mcc, description) VALUES
+    ('7995', 'betting / gambling'),
+    ('6051', 'quasi-cash / crypto');
+    
 CREATE INDEX ON authorizations(card_token, approved_at);
 CREATE INDEX ON authorizations(status, expires_at);
 

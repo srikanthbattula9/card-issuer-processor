@@ -1,14 +1,29 @@
 """Authorization engine: checks a card and account, places a hold, and
 returns approve or a specific decline code. Wired through the idempotency
-module so a retried authorize request is safe."""
+module so a retried authorize request is safe.
+
+Rule order (cheapest first): card status -> MCC blocklist -> velocity -> balance.
+The account row is locked before the MCC/velocity/balance checks, because
+velocity and balance are both check-then-act and must be serialized per account.
+"""
+import os
 import uuid
-from app.events import publish_event
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import psycopg
 
+from app.events import publish_event
 from app.idempotency import begin, advance, finish
+
+# Velocity: at most N non-declined authorizations per card per window.
+# Configurable so load tests can raise it.
+# Known gap: only approvals are counted. Real issuers often also count declined
+# attempts to catch card-testing; that is a documented follow-up.
+VELOCITY_MAX_AUTHS = int(os.environ.get("VELOCITY_MAX_AUTHS", "5"))
+VELOCITY_WINDOW_SECONDS = int(os.environ.get("VELOCITY_WINDOW_SECONDS", "60"))
+
+HOLD_DURATION = timedelta(hours=24)
 
 
 class DeclineError(Exception):
@@ -26,9 +41,6 @@ class AuthResult:
     amount_minor: int
 
 
-HOLD_DURATION = timedelta(hours=24)
-
-
 def authorize(
     conn: psycopg.Connection,
     idempotency_key: str,
@@ -37,9 +49,6 @@ def authorize(
     merchant_id: str,
     mcc: str,
 ) -> AuthResult:
-    """Run an authorization as atomic phases against the idempotency key.
-    Phases: started -> checked -> hold_placed -> finished.
-    """
     body = {
         "card_token": card_token,
         "amount_minor": amount_minor,
@@ -49,14 +58,12 @@ def authorize(
     req = begin(conn, idempotency_key, "/authorize", body)
 
     if req.recovery_point == "finished":
-        # Already resolved by a prior attempt — return the same outcome.
         row = conn.execute(
             "SELECT auth_id, status, decline_code, amount_minor FROM authorizations "
             "WHERE idempotency_key = %s", (idempotency_key,),
         ).fetchone()
         return AuthResult(*row)
 
-    # Phase: check card and account status, available balance.
     card = conn.execute(
         "SELECT c.status, c.account_id, c.expires_on FROM cards c WHERE c.card_token = %s",
         (card_token,),
@@ -78,21 +85,34 @@ def authorize(
     elif expires_on < now.date():
         decline_code = "54"
     else:
+        # Everything below reads state and then writes a hold, so serialize per account.
         conn.execute("SELECT account_id FROM accounts WHERE account_id = %s FOR UPDATE", (account_id,))
-        available = conn.execute(
-            "SELECT available_balance_minor FROM account_available_balance WHERE account_id = %s",
-            (account_id,),
-        ).fetchone()
-        available_minor = available[0] if available else 0
-        if available_minor < amount_minor:
-            decline_code = "51"
+
+        if conn.execute("SELECT 1 FROM blocked_mccs WHERE mcc = %s", (mcc,)).fetchone():
+            decline_code = "57"
+        else:
+            recent = conn.execute(
+                "SELECT count(*) FROM authorizations "
+                "WHERE card_token = %s AND status <> 'declined' "
+                "AND approved_at > now() - make_interval(secs => %s::double precision)",
+                (card_token, VELOCITY_WINDOW_SECONDS),
+            ).fetchone()[0]
+            if recent >= VELOCITY_MAX_AUTHS:
+                decline_code = "61"
+            else:
+                available = conn.execute(
+                    "SELECT available_balance_minor FROM account_available_balance WHERE account_id = %s",
+                    (account_id,),
+                ).fetchone()
+                available_minor = available[0] if available else 0
+                if available_minor < amount_minor:
+                    decline_code = "51"
 
     advance(conn, idempotency_key, "hold_placed")
 
     status = "declined" if decline_code else "approved"
     expires_at = now + HOLD_DURATION
 
-    # Phase: record the authorization (hold), whether approved or declined.
     conn.execute(
         "INSERT INTO authorizations (auth_id, card_token, account_id, amount_minor, merchant_id, "
         "mcc, status, decline_code, idempotency_key, expires_at) "
@@ -100,7 +120,6 @@ def authorize(
         (auth_id, card_token, account_id, amount_minor, merchant_id, mcc, status,
          decline_code, idempotency_key, expires_at),
     )
-    advance(conn, idempotency_key, "hold_placed")
 
     result = AuthResult(auth_id=auth_id, status=status, decline_code=decline_code, amount_minor=amount_minor)
     finish(conn, idempotency_key, 200, {
