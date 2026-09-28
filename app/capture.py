@@ -2,6 +2,7 @@
 A hold can be captured once, for up to the held amount. Capturing more than
 the hold, or capturing an expired/already-captured/declined hold, is rejected."""
 import uuid
+from app.events import publish_event
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -110,4 +111,7 @@ def capture(
         "auth_id": auth_id, "entry_id": entry_id, "captured_amount_minor": amount_minor,
     })
     conn.commit()
+    publish_event("transaction.captured", {
+        "auth_id": auth_id, "entry_id": entry_id, "captured_amount_minor": amount_minor,
+    })
     return result

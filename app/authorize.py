@@ -2,6 +2,7 @@
 returns approve or a specific decline code. Wired through the idempotency
 module so a retried authorize request is safe."""
 import uuid
+from app.events import publish_event
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -106,4 +107,7 @@ def authorize(
         "auth_id": auth_id, "status": status, "decline_code": decline_code,
     })
     conn.commit()
+    publish_event("authorization.decided", {
+        "auth_id": auth_id, "status": status, "decline_code": decline_code, "amount_minor": amount_minor,
+    })
     return result

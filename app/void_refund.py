@@ -3,6 +3,7 @@ Refund reverses a captured amount with a new opposing ledger entry — the
 original entry is never modified, only offset. This is what lets an auditor
 reconstruct history from an append-only log."""
 import uuid
+from app.events import publish_event
 from dataclasses import dataclass
 
 import psycopg
@@ -53,8 +54,8 @@ def void(conn: psycopg.Connection, idempotency_key: str, auth_id: str) -> VoidRe
     conn.execute("UPDATE authorizations SET status = 'voided' WHERE auth_id = %s", (auth_id,))
     finish(conn, idempotency_key, 200, {"auth_id": auth_id, "status": "voided"})
     conn.commit()
+    publish_event("authorization.voided", {"auth_id": auth_id})
     return VoidResult(auth_id=auth_id, status="voided")
-
 
 def refund(
     conn: psycopg.Connection,
@@ -110,4 +111,7 @@ def refund(
         "auth_id": auth_id, "entry_id": entry_id, "refunded_amount_minor": amount_minor,
     })
     conn.commit()
+    publish_event("transaction.refunded", {
+        "auth_id": auth_id, "entry_id": entry_id, "refunded_amount_minor": amount_minor,
+    })
     return result
