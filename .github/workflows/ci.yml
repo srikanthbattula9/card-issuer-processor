@@ -16,4 +16,5 @@ jobs:
         with: { python-version: "3.12" }
       - run: pip install -r requirements.txt
       - run: psql postgresql://postgres:postgres@localhost:5432/cards -f db/001_schema.sql
+      - run: psql postgresql://postgres:postgres@localhost:5432/cards -f db/002_nullable_invalid_card_auth.sql
       - run: EVENTS_DISABLED=1 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cards pytest -q
