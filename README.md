@@ -13,11 +13,11 @@ Modeled on the responsibilities of a card platform team: **authorization, transa
 | Double-entry ledger (DB-enforced zero-sum invariant) | done, tested |
 | Tokenized card vault (PAN kept out of operational tables) | schema only; encryption is a placeholder |
 | Card lifecycle endpoints (issue, activate, freeze, close, one-time virtual cards) | planned |
-| Authorization engine (card status, expiry, balance; decline codes 51/54/62/14; row-locked holds) | done, tested incl. concurrent-hold race |
+| Authorization engine (card status, expiry, MCC blocklist, velocity limit, balance; decline codes 51/54/57/61/62/14; row-locked holds; invalid-card attempts recorded for audit with a NULL card_token and the raw value in attempted_card_token) | done, tested incl. concurrent-hold and concurrent-velocity races |
 | Authorization rules: MCC blocklist (57), per-card velocity limit (61), evaluated under the account row lock | done, tested incl. concurrent-velocity test |
 | Idempotency keys with recovery-point tracking | done, tested; completer to resume interrupted requests planned |
 | Capture (partial/full), void, refund (offsetting entries) | done, tested |
-| HTTP API (authorize, capture, void, refund, balance) | done |
+| HTTP API (authorize, capture, void, refund, balance). Every authorization decline, including an unknown card token, returns HTTP 200 with `status: declined` and a `decline_code`; 4xx is reserved for malformed requests and idempotency conflicts | done |
 | Kafka events (published after commit) | done, best-effort; transactional outbox planned |
 | Network simulator (approve/decline/duplicate traffic, latency report) | done |
 | Settlement reconciliation | planned; see `settlement-recon` |

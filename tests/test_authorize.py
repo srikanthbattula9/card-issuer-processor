@@ -19,6 +19,21 @@ def test_insufficient_balance_is_declined_51(conn):
     assert result.decline_code == "51"
 
 
+def test_invalid_card_token_is_declined_14(conn):
+    fake_token = str(uuid.uuid4())
+    result = authorize(conn, str(uuid.uuid4()), fake_token, 1000, "merchant_1", "5812")
+    assert result.status == "declined"
+    assert result.decline_code == "14"
+
+    row = conn.execute(
+        "SELECT card_token, account_id, attempted_card_token FROM authorizations WHERE auth_id = %s",
+        (result.auth_id,),
+    ).fetchone()
+    assert row[0] is None, "card_token should be NULL when no matching card exists"
+    assert row[1] is None, "account_id should be NULL when no matching card exists"
+    assert row[2] == fake_token, "the raw attempted token should be preserved for audit purposes"
+
+
 def test_frozen_card_is_declined_62(conn):
     card = make_card(conn, balance_minor=5000, status="frozen")
     result = authorize(conn, str(uuid.uuid4()), card, 1000, "merchant_1", "5812")

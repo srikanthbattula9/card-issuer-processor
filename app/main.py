@@ -2,17 +2,25 @@
 functions in authorize.py, capture.py, void_refund.py — no business logic
 lives here, only request/response handling and idempotency-key extraction."""
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import psycopg
 import os
 
-from app.authorize import authorize, DeclineError
+from app.authorize import authorize
 from app.capture import capture, CaptureError
 from app.void_refund import void, refund, VoidError, RefundError
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/cards")
 
 app = FastAPI(title="card-issuer-processor")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 def get_conn():
@@ -43,10 +51,7 @@ class RefundRequest(BaseModel):
 @app.post("/authorize")
 def post_authorize(req: AuthorizeRequest, idempotency_key: str = Header(..., alias="Idempotency-Key")):
     with get_conn() as conn:
-        try:
-            result = authorize(conn, idempotency_key, req.card_token, req.amount_minor, req.merchant_id, req.mcc)
-        except DeclineError as e:
-            raise HTTPException(status_code=402, detail={"code": e.code, "reason": e.reason})
+        result = authorize(conn, idempotency_key, req.card_token, req.amount_minor, req.merchant_id, req.mcc)
         return {"auth_id": str(result.auth_id), "status": result.status, "decline_code": result.decline_code}
 
 

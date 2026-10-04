@@ -26,13 +26,6 @@ VELOCITY_WINDOW_SECONDS = int(os.environ.get("VELOCITY_WINDOW_SECONDS", "60"))
 HOLD_DURATION = timedelta(hours=24)
 
 
-class DeclineError(Exception):
-    def __init__(self, code: str, reason: str):
-        self.code = code
-        self.reason = reason
-        super().__init__(f"{code}: {reason}")
-
-
 @dataclass
 class AuthResult:
     auth_id: str
@@ -69,56 +62,61 @@ def authorize(
         (card_token,),
     ).fetchone()
 
-    if card is None:
-        raise DeclineError("14", "invalid card number")
-
-    card_status, account_id, expires_on = card
-
     auth_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
-
     decline_code = None
-    if card_status == "frozen":
-        decline_code = "62"
-    elif card_status == "closed":
-        decline_code = "14"
-    elif expires_on < now.date():
-        decline_code = "54"
-    else:
-        # Everything below reads state and then writes a hold, so serialize per account.
-        conn.execute("SELECT account_id FROM accounts WHERE account_id = %s FOR UPDATE", (account_id,))
+    account_id = None
 
-        if conn.execute("SELECT 1 FROM blocked_mccs WHERE mcc = %s", (mcc,)).fetchone():
-            decline_code = "57"
+    if card is None:
+        # No matching card: record the attempt for audit/fraud-signal purposes
+        # rather than rejecting before we can log it. card_token and account_id
+        # stay NULL; the raw value received is preserved separately.
+        decline_code = "14"
+    else:
+        card_status, account_id, expires_on = card
+        if card_status == "frozen":
+            decline_code = "62"
+        elif card_status == "closed":
+            decline_code = "14"
+        elif expires_on < now.date():
+            decline_code = "54"
         else:
-            recent = conn.execute(
-                "SELECT count(*) FROM authorizations "
-                "WHERE card_token = %s AND status <> 'declined' "
-                "AND approved_at > now() - make_interval(secs => %s::double precision)",
-                (card_token, VELOCITY_WINDOW_SECONDS),
-            ).fetchone()[0]
-            if recent >= VELOCITY_MAX_AUTHS:
-                decline_code = "61"
+            # Everything below reads state and then writes a hold, so serialize per account.
+            conn.execute("SELECT account_id FROM accounts WHERE account_id = %s FOR UPDATE", (account_id,))
+
+            if conn.execute("SELECT 1 FROM blocked_mccs WHERE mcc = %s", (mcc,)).fetchone():
+                decline_code = "57"
             else:
-                available = conn.execute(
-                    "SELECT available_balance_minor FROM account_available_balance WHERE account_id = %s",
-                    (account_id,),
-                ).fetchone()
-                available_minor = available[0] if available else 0
-                if available_minor < amount_minor:
-                    decline_code = "51"
+                recent = conn.execute(
+                    "SELECT count(*) FROM authorizations "
+                    "WHERE card_token = %s AND status <> 'declined' "
+                    "AND approved_at > now() - make_interval(secs => %s::double precision)",
+                    (card_token, VELOCITY_WINDOW_SECONDS),
+                ).fetchone()[0]
+                if recent >= VELOCITY_MAX_AUTHS:
+                    decline_code = "61"
+                else:
+                    available = conn.execute(
+                        "SELECT available_balance_minor FROM account_available_balance WHERE account_id = %s",
+                        (account_id,),
+                    ).fetchone()
+                    available_minor = available[0] if available else 0
+                    if available_minor < amount_minor:
+                        decline_code = "51"
 
     advance(conn, idempotency_key, "hold_placed")
 
     status = "declined" if decline_code else "approved"
     expires_at = now + HOLD_DURATION
 
+    db_card_token = card_token if card is not None else None
+
     conn.execute(
         "INSERT INTO authorizations (auth_id, card_token, account_id, amount_minor, merchant_id, "
-        "mcc, status, decline_code, idempotency_key, expires_at) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-        (auth_id, card_token, account_id, amount_minor, merchant_id, mcc, status,
-         decline_code, idempotency_key, expires_at),
+        "mcc, status, decline_code, idempotency_key, expires_at, attempted_card_token) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+        (auth_id, db_card_token, account_id, amount_minor, merchant_id, mcc, status,
+         decline_code, idempotency_key, expires_at, card_token),
     )
 
     result = AuthResult(auth_id=auth_id, status=status, decline_code=decline_code, amount_minor=amount_minor)
