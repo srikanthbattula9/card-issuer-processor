@@ -124,7 +124,19 @@ Conditions for every number below: one laptop, Postgres and Redpanda in Docker o
 
 What changed each step, from measurements: the index replaced a sequential scan of `authorizations` in the available-balance view (`EXPLAIN ANALYZE`: 3.7 ms to 0.5 ms for the query); the pool removed per-request connection setup (visible in a `py-spy` profile before and after); the extra server processes removed a single-interpreter ceiling at about 880/s that did not move with the Kafka flush, the thread limit, the pool size, or a second load generator.
 
-Not yet verified: that every published event reached the broker (the non-blocking option was only checked against the client's own failure counters, with one process); throughput with the velocity rule at its default; runs longer than 30 seconds; results on hardware other than this laptop.
+### Event delivery check
+
+`scripts/verify_events.sh RATE SECONDS` runs a load test and compares the number of authorizations written to Postgres with the number of events written to the `card.transactions` topic (read from the broker's high watermark), so the comparison does not depend on any in-process counter.
+
+| Publish mode | Rate | Requests | Events on topic | Result |
+|---|---|---|---|---|
+| blocking (default) | 300/s | 6,000 | 6,000 | match |
+| blocking (default) | 1,000/s | 20,000 | 20,000 | match |
+| non-blocking (`EVENTS_NONBLOCKING=1`) | 1,000/s | 20,000 | 19,996 | 4 events lost |
+
+Each row is one run. The four missing events were still missing when the topic was read again afterward, so they were lost, not late; the cause was not investigated. The non-blocking mode was a few milliseconds faster (p95 8.9 ms against 15.2 ms at 1,000/s) and gave no throughput gain once the server ran several processes, so it is not recommended and stays off by default. In both modes an event is published after the database commit, so a crash between the two still loses it; a transactional outbox would close that gap and is not built.
+
+Not yet verified: throughput with the velocity rule at its default; runs longer than 30 seconds; the event check at rates above 1,000/s or with the blocking mode more than once per rate; results on hardware other than this laptop.
 
 ## Why this exists
 
