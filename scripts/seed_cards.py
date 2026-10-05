@@ -40,14 +40,26 @@ def make_funded_card(conn, balance_minor, status="active"):
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--count", type=int, default=0,
+                        help="also create a pool of N well-funded cards in scripts/pool.json")
+    args = parser.parse_args()
+
     conn = psycopg.connect(DATABASE_URL)
     cards = {
         "well_funded": make_funded_card(conn, balance_minor=5_000_000)[0],
         "low_balance": make_funded_card(conn, balance_minor=500)[0],
         "frozen": make_funded_card(conn, balance_minor=5_000_000, status="frozen")[0],
     }
+    pool = [make_funded_card(conn, balance_minor=5_000_000)[0] for _ in range(args.count)]
     conn.commit()
+
     with open("scripts/cards.json", "w") as f:
         json.dump(cards, f, indent=2)
+    if args.count:
+        with open("scripts/pool.json", "w") as f:
+            json.dump({"pool": pool, "low_balance": cards["low_balance"], "frozen": cards["frozen"]}, f, indent=2)
+        print(f"created {args.count} pool cards in scripts/pool.json")
     for name, token in cards.items():
         print(f"{name}: {token}")

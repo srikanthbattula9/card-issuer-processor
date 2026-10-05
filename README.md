@@ -72,10 +72,8 @@ Python 3.12 · FastAPI · PostgreSQL · Kafka · Docker Compose · pytest · Git
 
 ## Running
 
-## Running
-
 ```bash
-docker compose up -d        # Postgres (localhost:5433) + Redpanda (localhost:9092); schema applies on first start
+docker compose up -d        # Postgres (localhost:5433) + Redpanda (localhost:9092)
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 make test
@@ -83,7 +81,50 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5433/cards uvicorn app.mai
 python3 scripts/seed_cards.py && python3 scripts/simulate_network.py
 ```
 
-After a schema change, `docker compose down && docker compose up -d` re-applies it (data is not persisted).
+The files in `db/` are applied in order, but only when the Postgres container is first created. After any schema change, `docker compose down && docker compose up -d` re-applies them (data is not persisted). CI applies the same files in the same order, so every new migration needs a matching `psql` step in `.github/workflows/ci.yml`.
+
+## Load testing
+
+```bash
+python3 scripts/seed_cards.py --count 5000     # writes scripts/pool.json (gitignored)
+# server: four processes, velocity limit raised so the test measures throughput, not the rule
+VELOCITY_MAX_AUTHS=100000 DB_POOL_MAX=20 DATABASE_URL=postgresql://postgres:postgres@localhost:5433/cards \
+  uvicorn app.main:app --port 8000 --workers 4
+python3 scripts/load_test.py --rate 1000 --duration 30 --workers 128
+```
+
+`load_test.py` is open-loop: it schedules requests at the target rate and reports achieved throughput, latency percentiles, and queue wait separately, so a service that cannot keep up shows up as backlog and not as a quietly lower rate. The mix is about 85% approvals, 5% insufficient funds, 4% unknown card, 1% frozen, and 10% of approvals are immediately resent with the same idempotency key to check that the same `auth_id` comes back.
+
+Server settings read from the environment:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | local Postgres on 5433 | connection string |
+| `DB_POOL_MIN` / `DB_POOL_MAX` | 10 / 60 | connections per server process; total across `--workers` must stay under Postgres's `max_connections` (100 by default) |
+| `THREAD_LIMIT` | 40 | worker threads for synchronous endpoints |
+| `VELOCITY_MAX_AUTHS` / `VELOCITY_WINDOW_SECONDS` | 5 / 60 | per-card velocity rule |
+| `EVENTS_DISABLED` | unset | `1` skips Kafka publishing (used by the tests) |
+| `EVENTS_NONBLOCKING` | unset | `1` publishes without waiting for broker acknowledgment (weaker delivery guarantee, see below) |
+
+`GET /health` reports the active pool and thread settings and the event delivery failure counters of the process that answered.
+
+## Measured results
+
+Conditions for every number below: one laptop, Postgres and Redpanda in Docker on the same machine as the server and the load generator, `/authorize` only, velocity limit raised to 100,000, 30-second runs, Kafka publish waits for acknowledgment (the default).
+
+| Configuration | Target/s | Achieved/s | p50 ms | p95 ms | Peak backlog |
+|---|---|---|---|---|---|
+| One process, connection per request | 500 | 361-385 | 305-325 | 372-405 | ~3,300-3,800 |
+| + partial index on open holds (migration 003) | 500 | 405 | 289 | 352 | 2,730 |
+| + connection pool | 500 | 500 | 8.4 | 11.4 | 16 |
+| + connection pool | 800 | 799 | 11.5 | 49.4 | 22 |
+| + connection pool | 1,000 | 858 | 137 | 168 | 4,031 |
+| + four server processes, pool 20 each | 1,000 | 1,000 | 4.1 | 8.5 | 20 |
+| + four server processes, pool 20 each | 1,500 | 1,455-1,480 | 130-131 | 260-271 | 415-1,132 |
+
+What changed each step, from measurements: the index replaced a sequential scan of `authorizations` in the available-balance view (`EXPLAIN ANALYZE`: 3.7 ms to 0.5 ms for the query); the pool removed per-request connection setup (visible in a `py-spy` profile before and after); the extra server processes removed a single-interpreter ceiling at about 880/s that did not move with the Kafka flush, the thread limit, the pool size, or a second load generator.
+
+Not yet verified: that every published event reached the broker (the non-blocking option was only checked against the client's own failure counters, with one process); throughput with the velocity rule at its default; runs longer than 30 seconds; results on hardware other than this laptop.
 
 ## Why this exists
 

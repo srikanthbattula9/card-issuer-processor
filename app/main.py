@@ -1,19 +1,34 @@
 """HTTP surface for the issuer-processor. Thin wrappers around the tested
 functions in authorize.py, capture.py, void_refund.py — no business logic
 lives here, only request/response handling and idempotency-key extraction."""
+from contextlib import asynccontextmanager
+import anyio.to_thread
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import psycopg
+from psycopg_pool import ConnectionPool
 import os
 
 from app.authorize import authorize
 from app.capture import capture, CaptureError
 from app.void_refund import void, refund, VoidError, RefundError
+from app.events import flush_events, event_failure_counts
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/cards")
 
-app = FastAPI(title="card-issuer-processor")
+@asynccontextmanager
+async def lifespan(_app):
+    # Sync endpoints run in worker threads; the default limit is 40, which caps
+    # concurrent requests regardless of pool size. Configurable for load tests.
+    anyio.to_thread.current_default_thread_limiter().total_tokens = int(os.environ.get("THREAD_LIMIT", "40"))
+    yield
+    # Shutdown: wait for queued events to be delivered, then close the DB pool.
+    flush_events(10.0)
+    pool.close()
+
+
+app = FastAPI(title="card-issuer-processor", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,8 +38,17 @@ app.add_middleware(
 )
 
 
+# One pool for the whole process instead of a new connection per request.
+# max_size stays under Postgres's default limit of 100 connections; requests
+# beyond it wait up to `timeout` seconds for a free connection, then fail with
+# an error instead of hanging.
+POOL_MIN = int(os.environ.get("DB_POOL_MIN", "10"))
+POOL_MAX = int(os.environ.get("DB_POOL_MAX", "60"))
+pool = ConnectionPool(DATABASE_URL, min_size=POOL_MIN, max_size=POOL_MAX, timeout=30, open=True)
+
+
 def get_conn():
-    return psycopg.connect(DATABASE_URL)
+    return pool.connection()
 
 
 class AuthorizeRequest(BaseModel):
@@ -95,3 +119,14 @@ def get_balance(account_id: int):
         if row is None:
             raise HTTPException(status_code=404, detail="account not found")
         return {"account_id": account_id, "ledger_balance_minor": row[0]}
+
+
+@app.get("/health")
+async def health():
+    """Event delivery failures since the process started. Read after a load test to confirm nothing was dropped."""
+    return {
+        "status": "ok",
+        "event_failures": event_failure_counts(),
+        "thread_limit": anyio.to_thread.current_default_thread_limiter().total_tokens,
+        "db_pool_max": POOL_MAX,
+    }
