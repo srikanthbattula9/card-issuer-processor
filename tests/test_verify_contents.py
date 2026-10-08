@@ -56,3 +56,9 @@ def test_entry_diff_checks_ledger_amount_and_type():
     assert diff({"auth_id": "A", "captured_amount_minor": 401}, good)
     assert diff(event, {**good, "ledger_amount": 401})
     assert diff(event, {**good, "entry_type": "refund"})
+
+
+def test_expired_event_amount_is_compared_to_the_database():
+    grouped = {"A": [{"auth_id": "A", "released_amount_minor": 600}]}
+    assert vc.compare("t", grouped, {"A": {"released_amount_minor": 600}}, vc.expired_diff) == 0
+    assert vc.compare("t", grouped, {"A": {"released_amount_minor": 601}}, vc.expired_diff) == 1

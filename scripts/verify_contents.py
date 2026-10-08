@@ -105,6 +105,9 @@ def load_db(conn, since):
         elif path == "/refund":
             refs[body["entry_id"]] = {"auth_id": body["auth_id"],
                                       "response_amount": body["refunded_amount_minor"]}
+    expired = {aid: {"released_amount_minor": rel} for aid, rel in conn.execute(
+        "SELECT auth_id::text, amount_minor - captured_amount_minor "
+        "FROM authorizations WHERE expired_at >= %s", (since,)).fetchall()}
     ids = list(caps) + list(refs)
     ledger, types = {}, {}
     if ids:
@@ -117,7 +120,7 @@ def load_db(conn, since):
         for k, x in d.items():
             x["ledger_amount"] = int(ledger[k]) if ledger.get(k) is not None else None
             x["entry_type"] = types.get(k)
-    return auth, caps, refs, voids
+    return auth, caps, refs, voids, expired
 
 
 def auth_diff(e, x):
@@ -138,6 +141,12 @@ def entry_diff(amount_field, entry_type):
             out.append(f"entry_type: expected {entry_type!r} got {x['entry_type']!r}")
         return out
     return diff
+
+
+def expired_diff(e, x):
+    if e.get("released_amount_minor") != x["released_amount_minor"]:
+        return [f"released_amount_minor: event={e.get('released_amount_minor')!r} db={x['released_amount_minor']!r}"]
+    return []
 
 
 def compare(name, ev, db, diff):
@@ -173,7 +182,7 @@ def check():
     events, unparseable = read_events(base["offset"], end)
     since = datetime.fromisoformat(base["db_now"])
     with psycopg.connect(DB_URL) as conn:
-        auth, caps, refs, voids = load_db(conn, since)
+        auth, caps, refs, voids, expired = load_db(conn, since)
     print(f"window: topic offsets {base['offset']}..{end} ({len(events)} events), database since {base['db_now']}\n")
     problems = unparseable
     problems += compare("authorization.decided", group(events, "authorization.decided", "auth_id"), auth, auth_diff)
@@ -182,7 +191,10 @@ def check():
                         entry_diff("captured_amount_minor", "capture"))
     problems += compare("transaction.refunded", group(events, "transaction.refunded", "entry_id"), refs,
                         entry_diff("refunded_amount_minor", "refund"))
-    known = {"authorization.decided", "authorization.voided", "transaction.captured", "transaction.refunded"}
+    problems += compare("authorization.expired", group(events, "authorization.expired", "auth_id"), expired,
+                        expired_diff)
+    known = {"authorization.decided", "authorization.voided", "authorization.expired",
+             "transaction.captured", "transaction.refunded"}
     other = Counter(e.get("event_type") for e in events if e.get("event_type") not in known)
     if other:
         print(f"\nevents of unknown type: {dict(other)}")
