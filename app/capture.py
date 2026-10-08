@@ -70,7 +70,7 @@ def capture(
 
     advance(conn, idempotency_key, "hold_placed")  # reusing this phase name to mean "validated, about to post"
 
-    # Post the ledger entry: debit customer, credit a merchant clearing account
+    # Post the ledger entry: move funds from the customer (negative line) to a merchant clearing account (positive line)
     # keyed by merchant_id (created on first use).
        # Simplification for this step: one shared merchant clearing account.
     # Real per-merchant accounts arrive when the fee split module lands.

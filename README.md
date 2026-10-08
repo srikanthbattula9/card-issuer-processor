@@ -17,6 +17,8 @@ Modeled on the responsibilities of a card platform team: **authorization, transa
 | Authorization rules: MCC blocklist (57), per-card velocity limit (61), evaluated under the account row lock | done, tested incl. concurrent-velocity test |
 | Idempotency keys with recovery-point tracking | done, tested; completer to resume interrupted requests planned |
 | Capture (partial/full), void, refund (offsetting entries) | done, tested |
+| Three balances (posted, held, available) from `GET /accounts/{id}/balance` | done, tested |
+| Explicit hold expiry (`python -m app.expire`, `authorization.expired` event) | done, tested; a separate process, not scheduled |
 | HTTP API (authorize, capture, void, refund, balance). Every authorization decline, including an unknown card token, returns HTTP 200 with `status: declined` and a `decline_code`; 4xx is reserved for malformed requests and idempotency conflicts | done |
 | Kafka events (published after commit) | done, best-effort; delivery checked by count and by contents; transactional outbox planned |
 | Network simulator (approve/decline/duplicate traffic, latency report) | done |
@@ -43,14 +45,23 @@ cardholder ──▶ [simulated network] ──auth/capture/settle──▶ [iss
 
 ## Money model
 
-Two balances, and they are different numbers:
+Three balances, and they are different numbers (the `account_balances` view, served by `GET /accounts/{id}/balance`):
 
-- **Ledger balance** — the sum of posted journal entries.
+- **Posted (ledger) balance** — the sum of posted journal entries.
+- **Held balance** is the remaining amount of open, unexpired authorization holds, which are pending debits.
 - **Available balance** — ledger balance minus open authorization holds.
 
 An authorization places a hold and does not move money. A capture posts the entry. Settlement is the network batch that confirms it. A void releases a hold. A refund is a new, opposite entry — never a deletion.
 
-Every journal entry has legs that sum to zero. There is a test for that, and it runs on every push.
+Every journal entry has legs that sum to zero. There is a test for that, and it runs on every push. Sign convention: customer and merchant balances are credit-normal, so a positive number is money held for that account; a capture lowers the customer's balance and raises the merchant clearing balance.
+
+## Balances and hold expiry
+
+`GET /accounts/{id}/balance` returns `posted_minor`, `held_minor` and `available_minor`, plus `ledger_balance_minor`, an alias of `posted_minor` kept for existing clients. All come from the `account_balances` view (migration 004). Holds are not ledger entries, so authorizing changes held and available but not posted. Capturing moves the captured amount from held into posted, and a partial capture leaves the remainder held. Pending credits are not modelled yet, because every credit posts immediately.
+
+A hold stops counting against the available balance the moment `expires_at` passes, whether or not anything has run. `python -m app.expire` (or `--interval 30` to loop) makes that state explicit: it sets lapsed holds to `expired`, records `expired_at`, and publishes `authorization.expired` with the amount released. It skips rows locked by an in-flight capture and picks them up on the next pass, so it can run beside the server. After a partial capture, expiry releases only the uncaptured remainder.
+
+Tested: balances through authorize, full capture and partial capture; a lapsed hold freeing available before the sweeper runs; the sweeper marking the row, its event contents, idempotency, partial-capture release, and skipping a locked row; capture rejected after expiry; and the new event type through the contents check (one live run, two holds, clean). Not tested: the sweeper under load, two sweepers running at once, and a fault injected into expired events (that matching has only a unit test). Nothing starts the sweeper for you, and the 24-hour hold length is a constant in `app/authorize.py`, not configuration. Publishing follows the same rule as every other event, after the commit, so a crash in between loses the event.
 
 ## Card lifecycle
 

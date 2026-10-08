@@ -43,7 +43,7 @@ CREATE TABLE journal_lines (
     line_id         BIGSERIAL PRIMARY KEY,
     entry_id        BIGINT NOT NULL REFERENCES journal_entries(entry_id),
     account_id      BIGINT NOT NULL REFERENCES accounts(account_id),
-    amount_minor    BIGINT NOT NULL,           -- cents; positive = debit, negative = credit
+    amount_minor    BIGINT NOT NULL,           -- cents; positive = money held for the account (see the 004 header); every entry sums to zero
     currency        CHAR(3) NOT NULL DEFAULT 'USD'
 );
 CREATE INDEX ON journal_lines(account_id);

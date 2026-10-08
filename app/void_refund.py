@@ -96,7 +96,7 @@ def refund(
         "VALUES ('refund', %s, %s) RETURNING entry_id",
         (uuid.uuid4(), idempotency_key),
     ).fetchone()[0]
-    # Opposite direction of capture: credit customer, debit merchant.
+    # Opposite direction of capture: customer line positive, merchant line negative.
     conn.execute(
         "INSERT INTO journal_lines(entry_id, account_id, amount_minor) VALUES (%s,%s,%s)",
         (entry_id, account_id, amount_minor),
