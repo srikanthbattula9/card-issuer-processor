@@ -18,7 +18,7 @@ Modeled on the responsibilities of a card platform team: **authorization, transa
 | Idempotency keys with recovery-point tracking | done, tested; completer to resume interrupted requests planned |
 | Capture (partial/full), void, refund (offsetting entries) | done, tested |
 | HTTP API (authorize, capture, void, refund, balance). Every authorization decline, including an unknown card token, returns HTTP 200 with `status: declined` and a `decline_code`; 4xx is reserved for malformed requests and idempotency conflicts | done |
-| Kafka events (published after commit) | done, best-effort; transactional outbox planned |
+| Kafka events (published after commit) | done, best-effort; delivery checked by count and by contents; transactional outbox planned |
 | Network simulator (approve/decline/duplicate traffic, latency report) | done |
 | Settlement reconciliation | planned; see `settlement-recon` |
 | Grafana dashboards | planned |
@@ -137,6 +137,33 @@ What changed each step, from measurements: the index replaced a sequential scan 
 Each row is one run. The four missing events were still missing when the topic was read again afterward, so they were lost, not late; the cause was not investigated. The non-blocking mode was a few milliseconds faster (p95 8.9 ms against 15.2 ms at 1,000/s) and gave no throughput gain once the server ran several processes, so it is not recommended and stays off by default. In both modes an event is published after the database commit, so a crash between the two still loses it; a transactional outbox would close that gap and is not built.
 
 Not yet verified: throughput with the velocity rule at its default; runs longer than 30 seconds; the event check at rates above 1,000/s or with the blocking mode more than once per rate; results on hardware other than this laptop.
+
+### Event contents check
+
+Comparing counts cannot see a duplicate that cancels a loss: one missing event plus one extra copy leaves the totals equal. `scripts/verify_contents.py` compares contents instead. Run `python3 scripts/verify_contents.py snapshot` before a run (it records the topic offset and the database clock) and `python3 scripts/verify_contents.py check` after. The check reads the events in that window and matches each to its database row by key, `auth_id` for authorizations and voids and `entry_id` for captures and refunds, then reports four numbers per event type: missing, extra copies, unexpected, and mismatched.
+
+What it compares: for authorizations, the status (any row that is not declined counts as approved, because the column later becomes captured, voided or expired while the event records the decision), decline code and amount; for captures and refunds, the event's `auth_id` and amount against the stored response and the ledger lines, and the ledger entry type; for voids, existence only, because the event carries only an `auth_id`.
+
+Clean runs (blocking publish, one laptop):
+
+| Run | Events in window | Result |
+|---|---|---|
+| 300/s load test (6,000 requests, 504 duplicate resends) plus `simulate_network.py` | 6,851: 6,500 decisions, 351 captures | clean |
+| 1 void, a capture with 2 partial refunds, 2 partial captures on another authorization | 9 | clean |
+
+The duplicate resends published no events.
+
+Fault injection, each done on purpose on a local database:
+
+| Fault | Count check | Contents check |
+|---|---|---|
+| Authorization row with no event | detects (one short) | `missing=1` |
+| Same kind of missing row plus a duplicate event for another row | passes (totals equal) | `missing=1`, `extra_copies=1` |
+| Authorization amount changed by 1 cent | passes | `mismatched=1` |
+| Capture ledger lines shifted by 1 cent, entry kept balanced | not covered (counts authorizations only) | `mismatched=1` |
+| Void record with no event | not covered | `missing=1` |
+
+Limits: no fault was injected into refund events, so the refund comparison, which shares code with the capture comparison, has not been shown to fire on its own. The check has not been run with `EVENTS_NONBLOCKING=1`, above 300/s, or more than once per setting. It windows on the database clock, so run it when the system is idle; a request in flight at the snapshot can show up as unexpected. It needs Kafka and Postgres, so CI does not run it; the matching logic is covered by unit tests in `tests/test_verify_contents.py`. A crash between commit and publish would show up as a missing event, which is the gap a transactional outbox would close.
 
 ## Why this exists
 

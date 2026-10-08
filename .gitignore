@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 scripts/cards.json
 scripts/pool.json
+scripts/verify_baseline.json
