@@ -15,7 +15,15 @@ SWEEP_ALL = 1_000_000
 @pytest.fixture
 def published(monkeypatch):
     events = []
-    monkeypatch.setattr(expire, "publish_event", lambda event_type, payload: events.append((event_type, payload)))
+
+    def capture(event_type, payload):
+        # Every event now carries an outbox event_id; assert it, then drop it so
+        # tests can compare the rest of the payload by equality.
+        payload = dict(payload)
+        assert payload.pop("event_id"), "published event is missing event_id"
+        events.append((event_type, payload))
+
+    monkeypatch.setattr(expire, "publish_event", capture)
     return events
 
 

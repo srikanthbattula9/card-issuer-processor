@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg
 
 from app.events import publish_event
+from app.outbox import record_event
 from app.idempotency import begin, advance, finish
 
 # Velocity: at most N non-declined authorizations per card per window.
@@ -123,8 +124,8 @@ def authorize(
     finish(conn, idempotency_key, 200, {
         "auth_id": auth_id, "status": status, "decline_code": decline_code,
     })
+    event = {"auth_id": auth_id, "status": status, "decline_code": decline_code, "amount_minor": amount_minor}
+    event["event_id"] = record_event(conn, "authorization.decided", event)
     conn.commit()
-    publish_event("authorization.decided", {
-        "auth_id": auth_id, "status": status, "decline_code": decline_code, "amount_minor": amount_minor,
-    })
+    publish_event("authorization.decided", event)
     return result

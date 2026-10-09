@@ -19,4 +19,5 @@ jobs:
       - run: psql postgresql://postgres:postgres@localhost:5432/cards -f db/002_nullable_invalid_card_auth.sql
       - run: psql postgresql://postgres:postgres@localhost:5432/cards -f db/003_authorizations_account_index.sql
       - run: psql postgresql://postgres:postgres@localhost:5432/cards -f db/004_balances_and_hold_expiry.sql
+      - run: psql postgresql://postgres:postgres@localhost:5432/cards -f db/005_webhooks_outbox.sql
       - run: EVENTS_DISABLED=1 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/cards pytest -q

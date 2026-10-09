@@ -14,6 +14,7 @@ from app.authorize import authorize
 from app.capture import capture, CaptureError
 from app.void_refund import void, refund, VoidError, RefundError
 from app.events import flush_events, event_failure_counts
+from app.webhooks import register_endpoint
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5433/cards")
 
@@ -122,6 +123,21 @@ def get_balance(account_id: int):
         # ledger_balance_minor is kept as an alias of posted_minor for existing clients.
         return {"account_id": account_id, "posted_minor": posted, "held_minor": held,
                 "available_minor": available, "ledger_balance_minor": posted}
+
+
+class WebhookEndpointRequest(BaseModel):
+    merchant_id: str
+    url: str
+
+
+@app.post("/webhook_endpoints", status_code=201)
+def create_webhook_endpoint(req: WebhookEndpointRequest):
+    """Register a webhook URL for a merchant. The signing secret is returned
+    once, here, and must be stored by the merchant."""
+    with get_conn() as conn:
+        endpoint_id, secret = register_endpoint(conn, req.merchant_id, req.url)
+        conn.commit()
+    return {"endpoint_id": endpoint_id, "merchant_id": req.merchant_id, "url": req.url, "secret": secret}
 
 
 @app.get("/health")

@@ -20,7 +20,8 @@ Modeled on the responsibilities of a card platform team: **authorization, transa
 | Three balances (posted, held, available) from `GET /accounts/{id}/balance` | done, tested |
 | Explicit hold expiry (`python -m app.expire`, `authorization.expired` event) | done, tested; a separate process, not scheduled |
 | HTTP API (authorize, capture, void, refund, balance). Every authorization decline, including an unknown card token, returns HTTP 200 with `status: declined` and a `decline_code`; 4xx is reserved for malformed requests and idempotency conflicts | done |
-| Kafka events (published after commit) | done, best-effort; delivery checked by count and by contents; transactional outbox planned |
+| Kafka events (published after commit) | done, best-effort; delivery checked by count and by contents; still after-commit, so a crash between commit and publish loses the Kafka copy (the outbox row survives) |
+| Webhooks: transactional outbox, Stripe-style signatures, retries with backoff, reference consumer that dedupes | done, tested end to end with forced failures and a forced duplicate; worker is a separate process, not scheduled |
 | Network simulator (approve/decline/duplicate traffic, latency report) | done |
 | Settlement reconciliation | planned; see `settlement-recon` |
 | Grafana dashboards | planned |
@@ -62,6 +63,22 @@ Every journal entry has legs that sum to zero. There is a test for that, and it 
 A hold stops counting against the available balance the moment `expires_at` passes, whether or not anything has run. `python -m app.expire` (or `--interval 30` to loop) makes that state explicit: it sets lapsed holds to `expired`, records `expired_at`, and publishes `authorization.expired` with the amount released. It skips rows locked by an in-flight capture and picks them up on the next pass, so it can run beside the server. After a partial capture, expiry releases only the uncaptured remainder.
 
 Tested: balances through authorize, full capture and partial capture; a lapsed hold freeing available before the sweeper runs; the sweeper marking the row, its event contents, idempotency, partial-capture release, and skipping a locked row; capture rejected after expiry; and the new event type through the contents check (one live run, two holds, clean). Not tested: the sweeper under load, two sweepers running at once, and a fault injected into expired events (that matching has only a unit test). Nothing starts the sweeper for you, and the 24-hour hold length is a constant in `app/authorize.py`, not configuration. Publishing follows the same rule as every other event, after the commit, so a crash in between loses the event.
+
+## Webhooks
+
+Every state change (`authorization.decided`, `transaction.captured`, `transaction.refunded`, `authorization.voided`, `authorization.expired`) is written to an `events` table **in the same transaction** as the ledger or authorization change, with one `webhook_deliveries` row per active endpoint of the merchant (`app/outbox.py`). An event row therefore exists if and only if the change committed; there is no window in which one exists without the other. The `event_id` is generated there and the Kafka copy of the event carries the same ID.
+
+Merchants register an endpoint with `POST /webhook_endpoints {"merchant_id", "url"}` and receive the signing secret once. A worker (`python -m app.webhooks [--interval N]`) claims due rows with `FOR UPDATE SKIP LOCKED`, POSTs the event, and marks the row `delivered` only on a 2xx. Failures are retried with full-jitter exponential backoff (`min(2s·2ⁿ, 5 min)`, 8 attempts, then `failed`). Delivery is **at-least-once**: a crash after the POST but before the row is updated re-sends the event.
+
+Each request carries `Webhook-Id: <event_id>` and `Webhook-Signature: t=<unix>,v1=<hex>`, where `v1 = HMAC-SHA256(secret, "<t>.<raw body>")`. Signing the timestamp bounds replay; receivers reject signatures older than 5 minutes.
+
+`consumer/app.py` is a reference receiver. It verifies the signature, then inserts the `event_id` into a table with a primary key inside the same transaction as its processing; a duplicate hits the key, does nothing, and is acknowledged with 200. `FAIL_FIRST_N=<n>` makes it reject the first n requests so the retry path can be watched.
+
+Demonstrated locally (authorize → capture → refund against a consumer with `FAIL_FIRST_N=2`): first pass delivered 1 and scheduled 2 retries; both retried and delivered within ~4 s on attempt 2. Resetting a delivered row to `pending` re-sent it; the consumer reported `received 6, processed 3, duplicate 1, stored 3`. A request with a forged signature was rejected with 400.
+
+Tested (`tests/test_webhooks.py`): signature round-trip, tampered body, wrong secret, stale and edited timestamp, malformed header; backoff bounds; one delivery row per active endpoint and none for inactive ones; signed successful delivery; failure → retry with later `next_attempt_at` → success; give-up after the maximum attempts; connection failure counts as an attempt; a row locked by another worker is skipped.
+
+Limits: the worker holds the row lock across the HTTP call, so one worker delivers one row at a time (run several for parallelism). Endpoint secrets are stored in plaintext. There is no secret rotation, no endpoint management API beyond create, no per-merchant event-type subscription, and no dead-letter inspection endpoint. The outbox only covers webhooks; Kafka still publishes after commit.
 
 ## Card lifecycle
 

@@ -16,6 +16,7 @@ import time
 import psycopg
 
 from app.events import flush_events, publish_event
+from app.outbox import record_event
 
 DEFAULT_DATABASE_URL = "postgresql://postgres:postgres@localhost:5433/cards"
 BATCH = 1000
@@ -34,10 +35,15 @@ def expire_holds(conn: psycopg.Connection, limit: int = BATCH) -> list[str]:
         "RETURNING a.auth_id::text, a.amount_minor - a.captured_amount_minor",
         (limit,),
     ).fetchall()
-    conn.commit()
-    # Published after commit like every other event, so a crash in between loses it.
+    events = []
     for auth_id, released in rows:
-        publish_event("authorization.expired", {"auth_id": auth_id, "released_amount_minor": released})
+        payload = {"auth_id": auth_id, "released_amount_minor": released}
+        payload["event_id"] = record_event(conn, "authorization.expired", payload)
+        events.append(payload)
+    conn.commit()
+    # Kafka publish is after commit and best-effort; the outbox row above is the durable record.
+    for payload in events:
+        publish_event("authorization.expired", payload)
     return [auth_id for auth_id, _ in rows]
 
 

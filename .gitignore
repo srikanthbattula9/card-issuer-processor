@@ -5,3 +5,4 @@ __pycache__/
 scripts/cards.json
 scripts/pool.json
 scripts/verify_baseline.json
+consumer/received.sqlite
