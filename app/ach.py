@@ -91,7 +91,7 @@ def post_due(conn: psycopg.Connection, clock: Clock, clearing_account_id: int, l
             "UPDATE ach_transfers SET status='posted', posted_at=%s, entry_id=%s WHERE transfer_id=%s",
             (clock.now(), entry_id, transfer_id))
         posted.append(str(transfer_id))
-        publish_event("ach.posted", {"transfer_id": transfer_id, "account_id": account_id,
+        publish_event("ach.posted", {"transfer_id": str(transfer_id), "account_id": account_id,
                                     "amount_minor": amount_minor})
     return posted
 
@@ -134,6 +134,6 @@ def apply_return(conn: psycopg.Connection, clock: Clock, clearing_account_id: in
         (clock.now(), return_code, reversal_entry_id, transfer_id))
 
     publish_event("ach.returned", {
-        "transfer_id": transfer_id, "account_id": account_id, "amount_minor": amount_minor,
+        "transfer_id": str(transfer_id), "account_id": account_id, "amount_minor": amount_minor,
         "return_code": return_code, "was_posted": status == "posted",
     })
