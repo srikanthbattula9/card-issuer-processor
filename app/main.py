@@ -114,15 +114,15 @@ def post_refund(req: RefundRequest, idempotency_key: str = Header(..., alias="Id
 def get_balance(account_id: int):
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT posted_minor, held_minor, available_minor FROM account_balances WHERE account_id = %s",
-            (account_id,),
+            "SELECT posted_minor, held_minor, pending_minor, available_minor FROM account_balances "
+            "WHERE account_id = %s", (account_id,),
         ).fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="account not found")
-        posted, held, available = row
+        posted, held, pending, available = row
         # ledger_balance_minor is kept as an alias of posted_minor for existing clients.
         return {"account_id": account_id, "posted_minor": posted, "held_minor": held,
-                "available_minor": available, "ledger_balance_minor": posted}
+                "pending_minor": pending, "available_minor": available, "ledger_balance_minor": posted}
 
 
 class WebhookEndpointRequest(BaseModel):

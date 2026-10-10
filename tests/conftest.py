@@ -55,3 +55,8 @@ def make_card(conn, *, balance_minor=0, status="active", expires_on=None):
     )
     conn.commit()
     return str(card_token)
+
+def make_account(conn, account_type="customer"):
+    return conn.execute(
+        "INSERT INTO accounts (account_type) VALUES (%s) RETURNING account_id", (account_type,)
+    ).fetchone()[0]

@@ -17,7 +17,8 @@ Modeled on the responsibilities of a card platform team: **authorization, transa
 | Authorization rules: MCC blocklist (57), per-card velocity limit (61), evaluated under the account row lock | done, tested incl. concurrent-velocity test |
 | Idempotency keys with recovery-point tracking | done, tested; completer to resume interrupted requests planned |
 | Capture (partial/full), void, refund (offsetting entries) | done, tested |
-| Three balances (posted, held, available) from `GET /accounts/{id}/balance` | done, tested |
+| Three balances (posted, held, available, pending) from `GET /accounts/{id}/balance` | done, tested |
+| ACH credit funding with simulated R01/R10 returns (`app/ach.py`, simulated clock) | done, tested incl. R10-after-posting taking a balance negative; no HTTP endpoint or scheduled sweep yet |
 | Explicit hold expiry (`python -m app.expire`, `authorization.expired` event) | done, tested; a separate process, not scheduled |
 | HTTP API (authorize, capture, void, refund, balance). Every authorization decline, including an unknown card token, returns HTTP 200 with `status: declined` and a `decline_code`; 4xx is reserved for malformed requests and idempotency conflicts | done |
 | Kafka events (published after commit) | done, best-effort; delivery checked by count and by contents; still after-commit, so a crash between commit and publish loses the Kafka copy (the outbox row survives) |
@@ -79,6 +80,61 @@ Demonstrated locally (authorize → capture → refund against a consumer with `
 Tested (`tests/test_webhooks.py`): signature round-trip, tampered body, wrong secret, stale and edited timestamp, malformed header; backoff bounds; one delivery row per active endpoint and none for inactive ones; signed successful delivery; failure → retry with later `next_attempt_at` → success; give-up after the maximum attempts; connection failure counts as an attempt; a row locked by another worker is skipped.
 
 Limits: the worker holds the row lock across the HTTP call, so one worker delivers one row at a time (run several for parallelism). Endpoint secrets are stored in plaintext. There is no secret rotation, no endpoint management API beyond create, no per-merchant event-type subscription, and no dead-letter inspection endpoint. The outbox only covers webhooks; Kafka still publishes after commit.
+
+## ACH
+
+ACH credit funding, with simulated R01 (insufficient funds) and R10
+(unauthorized) return behavior, driven by a simulated clock rather than
+real time or backdated rows.
+
+A credit (`app/ach.py:initiate_credit`) is **pending** -- in `pending_minor`,
+not spendable -- until `post_due` posts it to the ledger once its R01
+window has closed with no return. R01 can only return a still-pending
+transfer, since in this simulated model its window closes exactly when
+posting would happen. R10 has a much longer window and can return a
+transfer that has already posted and been spent, reversing the original
+journal entry -- which can take the account negative. That's real ACH
+float risk, not a bug, and it's covered by a test.
+
+```python
+from app.ach import initiate_credit, post_due, apply_return
+from app.clock import SystemClock
+
+clock = SystemClock()
+transfer_id = initiate_credit(conn, clock, account_id, amount_minor=5000)
+conn.commit()
+
+# ... two simulated days later ...
+post_due(conn, clock, clearing_account_id)   # posts if no return arrived
+conn.commit()
+
+# ... a return file arrives ...
+apply_return(conn, clock, clearing_account_id, transfer_id, "R01")
+conn.commit()
+```
+
+`GET /accounts/{id}/balance` now returns `pending_minor` alongside the
+three balances from Step 2.
+
+Tested (`tests/test_ach.py`, 14 tests): a credit is pending and not
+spendable; `post_due` does nothing before the window closes and posts
+once it does; a hypothetical double-post is blocked by `journal_entries`'
+unique idempotency key, not just application logic; R01 before posting
+leaves no journal entries at all; R01 cannot return an already-posted
+transfer; R10 before posting also leaves nothing; **R10 after posting
+reverses a spent credit and takes the balance negative**; the R10 window
+eventually closes; an unknown return code and a repeat return on an
+already-returned transfer are both rejected; negative amounts are
+rejected; the simulated clock advances independently of real time; the
+balance endpoint reports `pending_minor`.
+
+Limits: no HTTP endpoints for `initiate_credit`/`apply_return` yet (library
++ CLI-free for now, same stage webhooks were in before Step 3's API route);
+`post_due` isn't run on a schedule, same as the hold-expiry sweeper; window
+lengths are simulated constants, not NACHA's actual business-day rules
+(which exclude weekends and holidays); ACH events publish to Kafka directly
+and are not wired into the webhook outbox, since `record_event` resolves a
+merchant via `auth_id` and ACH funding has neither.
 
 ## Card lifecycle
 
